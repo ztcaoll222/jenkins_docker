@@ -1,36 +1,39 @@
-FROM centos:centos7.9.2009
+FROM eclipse-temurin:17.0.6_10-jdk-alpine AS jre-build
 
-ENV LANG='en_US.UTF-8' LANGUAGE='en_US:en' LC_ALL='en_US.UTF-8'
+# Generate smaller java runtime without unneeded files
+# for now we include the full module path to maintain compatibility
+# while still saving space (approx 200mb from the full distribution)
+RUN apk add --no-cache binutils \
+  && jlink \
+         --add-modules ALL-MODULE-PATH \
+         --strip-debug \
+         --no-man-pages \
+         --no-header-files \
+         --compress=2 \
+         --output /javaruntime
+
+FROM alpine:3.17.3
+
+RUN apk add --no-cache \
+    bash \
+    coreutils \
+    curl \
+    git \
+    git-lfs \
+    gnupg \
+    musl-locales \
+    musl-locales-lang \
+    openssh-client \
+    tini \
+    ttf-dejavu \
+    tzdata \
+    unzip \
+  && git lfs install
+
+ENV LANG C.UTF-8
 
 ARG TARGETARCH
 ARG COMMIT_SHA
-
-RUN echo -e '[AdoptOpenJDK]\n\
-name=AdoptOpenJDK\n\
-baseurl=https://adoptopenjdk.jfrog.io/adoptopenjdk/rpm/centos/$releasever/$basearch\n\
-enabled=1\n\
-gpgcheck=1\n\
-gpgkey=https://adoptopenjdk.jfrog.io/adoptopenjdk/api/gpg/key/public' > /etc/yum.repos.d/adoptopenjdk.repo && \
-    yum update -y && yum install -y git curl adoptopenjdk-8-hotspot-8u292_b10-3 freetype fontconfig unzip which && \
-    yum clean all
-
-ARG TARGETARCH
-ARG COMMIT_SHA
-ARG GIT_LFS_VERSION=3.0.2
-
-# required for multi-arch support, revert to package cloud after:
-# https://github.com/git-lfs/git-lfs/issues/4546
-COPY git_lfs_pub.gpg /tmp/git_lfs_pub.gpg
-RUN GIT_LFS_ARCHIVE="git-lfs-linux-${TARGETARCH}-v${GIT_LFS_VERSION}.tar.gz" \
-    GIT_LFS_RELEASE_URL="https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/${GIT_LFS_ARCHIVE}"\
-    set -x; curl --fail --silent --location --show-error --output "/tmp/${GIT_LFS_ARCHIVE}" "${GIT_LFS_RELEASE_URL}" && \
-    curl --fail --silent --location --show-error --output "/tmp/git-lfs-sha256sums.asc" https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/sha256sums.asc && \
-    gpg --no-tty --import /tmp/git_lfs_pub.gpg && \
-    gpg -d /tmp/git-lfs-sha256sums.asc | grep "${GIT_LFS_ARCHIVE}" | (cd /tmp; sha256sum -c ) && \
-    mkdir -p /tmp/git-lfs && \
-    tar xzvf "/tmp/${GIT_LFS_ARCHIVE}" -C /tmp/git-lfs && \
-    bash -x /tmp/git-lfs/install.sh && \
-    rm -rf /tmp/git-lfs*
 
 ARG user=jenkins
 ARG group=jenkins
@@ -50,8 +53,8 @@ ENV REF $REF
 # ensure you use the same uid
 RUN mkdir -p $JENKINS_HOME \
   && chown ${uid}:${gid} $JENKINS_HOME \
-  && groupadd -g ${gid} ${group} \
-  && useradd -N -d "$JENKINS_HOME" -u ${uid} -g ${gid} -m -s /bin/bash ${user}
+  && addgroup -g ${gid} ${group} \
+  && adduser -h "$JENKINS_HOME" -u ${uid} -G ${group} -s /bin/bash -D ${user}
 
 # Jenkins home directory is a volume, so configuration and build history
 # can be persisted and survive image upgrades
@@ -62,22 +65,12 @@ VOLUME $JENKINS_HOME
 # or config file with your custom jenkins Docker image.
 RUN mkdir -p ${REF}/init.groovy.d
 
-# Use tini as subreaper in Docker container to adopt zombie processes
-ARG TINI_VERSION=v0.19.0
-COPY tini_pub.gpg "${JENKINS_HOME}/tini_pub.gpg"
-RUN curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static-${TARGETARCH}" -o /sbin/tini \
-  && curl -fsSL "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static-${TARGETARCH}.asc" -o /sbin/tini.asc \
-  && gpg --no-tty --import "${JENKINS_HOME}/tini_pub.gpg" \
-  && gpg --verify /sbin/tini.asc \
-  && rm -rf /sbin/tini.asc /root/.gnupg \
-  && chmod +x /sbin/tini
-
 # jenkins version being bundled in this docker image
 ARG JENKINS_VERSION
-ENV JENKINS_VERSION ${JENKINS_VERSION:-2.303}
+ENV JENKINS_VERSION ${JENKINS_VERSION:-2.356}
 
 # jenkins.war checksum, download will be validated using it
-ARG JENKINS_SHA=4dfe49cd7422ec4317a7c7a7c083f40fa475a58a7747bd94187b2cf222006ac0
+ARG JENKINS_SHA=1163c4554dc93439c5eef02b06a8d74f98ca920bbc012c2b8a089d414cfa8075
 
 # Can be used to customize where jenkins.war get downloaded from
 ARG JENKINS_URL=https://repo.jenkins-ci.org/public/org/jenkins-ci/main/jenkins-war/${JENKINS_VERSION}/jenkins-war-${JENKINS_VERSION}.war
@@ -85,14 +78,16 @@ ARG JENKINS_URL=https://repo.jenkins-ci.org/public/org/jenkins-ci/main/jenkins-w
 # could use ADD but this one does not check Last-Modified header neither does it allow to control checksum
 # see https://github.com/docker/docker/issues/8331
 RUN curl -fsSL ${JENKINS_URL} -o /usr/share/jenkins/jenkins.war \
-  && echo "${JENKINS_SHA}  /usr/share/jenkins/jenkins.war" | sha256sum -c -
+  && echo "${JENKINS_SHA}  /usr/share/jenkins/jenkins.war" >/tmp/jenkins_sha \
+  && sha256sum -c --strict /tmp/jenkins_sha \
+  && rm -f /tmp/jenkins_sha
 
 ENV JENKINS_UC https://updates.jenkins.io
 ENV JENKINS_UC_EXPERIMENTAL=https://updates.jenkins.io/experimental
 ENV JENKINS_INCREMENTALS_REPO_MIRROR=https://repo.jenkins-ci.org/incrementals
 RUN chown -R ${user} "$JENKINS_HOME" "$REF"
 
-ARG PLUGIN_CLI_VERSION=2.9.3
+ARG PLUGIN_CLI_VERSION=2.12.11
 ARG PLUGIN_CLI_URL=https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/${PLUGIN_CLI_VERSION}/jenkins-plugin-manager-${PLUGIN_CLI_VERSION}.jar
 RUN curl -fsSL ${PLUGIN_CLI_URL} -o /opt/jenkins-plugin-manager.jar
 
@@ -104,17 +99,17 @@ EXPOSE ${agent_port}
 
 ENV COPY_REFERENCE_FILE_LOG $JENKINS_HOME/copy_reference_file.log
 
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH "${JAVA_HOME}/bin:${PATH}"
+COPY --from=jre-build /javaruntime $JAVA_HOME
+
 USER ${user}
 
 COPY jenkins-support /usr/local/bin/jenkins-support
 COPY jenkins.sh /usr/local/bin/jenkins.sh
-COPY tini-shim.sh /bin/tini
 COPY jenkins-plugin-cli.sh /bin/jenkins-plugin-cli
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/jenkins.sh"]
-
-# from a derived Dockerfile, can use `RUN install-plugins.sh active.txt` to setup $REF/plugins from a support bundle
-COPY install-plugins.sh /usr/local/bin/install-plugins.sh
 
 # metadata labels
 LABEL \

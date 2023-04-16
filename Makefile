@@ -10,9 +10,9 @@ export BUILDKIT_PROGRESS=plain
 export COMMIT_SHA=$(shell git rev-parse HEAD)
 
 current_arch := $(shell uname -m)
-export ARCH ?= $(shell case $(current_arch) in (x86_64) echo "amd64" ;; (i386) echo "386";; (aarch64|arm64) echo "arm64" ;; (armv6*) echo "arm/v6";; (armv7*) echo "arm/v7";; (ppc64*|s390*|riscv*) echo $(current_arch);; (*) echo "UNKNOWN-CPU";; esac)
+export ARCH ?= $(shell case $(current_arch) in (x86_64) echo "amd64" ;; (i386) echo "386";; (aarch64|arm64) echo "arm64" ;; (armv6*) echo "arm/v6";; (armv7*) echo "arm/v7";; (s390*|riscv*) echo $(current_arch);; (*) echo "UNKNOWN-CPU";; esac)
 
-all: shellcheck build test
+all: hadolint shellcheck build test
 
 # Set to 'true' to disable parellel tests
 DISABLE_PARALLEL_TESTS ?= false
@@ -39,8 +39,11 @@ check-reqs:
 	@$(call check_cli,curl)
 	@$(call check_cli,jq)
 
+hadolint:
+	find . -type f -name 'Dockerfile*' -not -path "./bats/*" -print0 | xargs -0 $(ROOT_DIR)/tools/hadolint
+
 shellcheck:
-	$(ROOT_DIR)/tools/shellcheck -e SC1091 jenkins-support *.sh
+	$(ROOT_DIR)/tools/shellcheck -e SC1091 jenkins-support *.sh tests/test_helpers.bash tools/hadolint tools/shellcheck .ci/publish.sh
 
 build: check-reqs
 	@set -x; $(bake_base_cli) --set '*.platform=linux/$(ARCH)' $(shell make --silent list)
@@ -58,7 +61,7 @@ list: check-reqs
 bats:
 	git clone https://github.com/bats-core/bats-core bats ;\
 	cd bats ;\
-	git checkout eac1e9d047b2b8137d85307fc94439c90bdc25ae
+	git checkout 410dd229a5ed005c68167cc90ed0712ad2a1c909; # v1.7.0
 
 prepare-test: bats check-reqs
 	git submodule update --init --recursive
@@ -85,14 +88,11 @@ test-%: prepare-test
 # Execute the test harness and write result to a TAP file
 	IMAGE=$* bats/bin/bats $(bats_flags) | tee target/results-$*.tap
 # convert TAP to JUNIT
-	docker run --rm -v "$(CURDIR)":/usr/src/app -w /usr/src/app node:12-alpine \
+	docker run --rm -v "$(CURDIR)":/usr/src/app -w /usr/src/app node:18-alpine \
 		sh -c "npm install tap-xunit -g && cat target/results-$*.tap | tap-xunit --package='jenkinsci.docker.$*' > target/junit-results-$*.xml"
 
 test: prepare-test
 	@make --silent list | while read image; do make --silent "test-$${image}"; done
-
-test-install-plugins: prepare-test
-	@make --silent test TEST_SUITES=tests/install-plugins.bats tests/plugins-cli.bats
 
 publish:
 	./.ci/publish.sh
@@ -101,4 +101,4 @@ clean:
 	rm -rf tests/test_helper/bats-*; \
 	rm -rf bats
 
-.PHONY: shellcheck check-reqs build clean test list test-install-plugins show
+.PHONY: hadolint shellcheck check-reqs build clean test list show

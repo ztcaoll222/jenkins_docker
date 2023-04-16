@@ -14,7 +14,7 @@ This is a fully functional Jenkins server.
 # Usage
 
 ```
-docker run -p 8080:8080 -p 50000:50000 --restart always jenkins/jenkins:lts-jdk11
+docker run -p 8080:8080 -p 50000:50000 --restart=on-failure jenkins/jenkins:lts-jdk11
 ```
 
 NOTE: read the section [_Connecting agents_](#connecting-agents) below for the role of the `50000` port mapping.
@@ -24,7 +24,7 @@ All Jenkins data lives in there - including plugins and configuration.
 You will probably want to make that an explicit volume so you can manage it and attach to another container for upgrades :
 
 ```
-docker run -p 8080:8080 -p 50000:50000 --restart always -v jenkins_home:/var/jenkins_home jenkins/jenkins:lts-jdk11
+docker run -p 8080:8080 -p 50000:50000 --restart=on-failure -v jenkins_home:/var/jenkins_home jenkins/jenkins:lts-jdk11
 ```
 
 This will automatically create a 'jenkins_home' [docker volume](https://docs.docker.com/storage/volumes/) on the host machine.
@@ -34,20 +34,20 @@ NOTE: Avoid using a [bind mount](https://docs.docker.com/storage/bind-mounts/) f
 If you _really_ need to bind mount jenkins_home, ensure that the directory on the host is accessible by the jenkins user inside the container (jenkins user - uid 1000) or use `-u some_other_user` parameter with `docker run`.
 
 ```
-docker run -d -v jenkins_home:/var/jenkins_home -p 8080:8080 -p 50000:50000 --restart always jenkins/jenkins:lts-jdk11
+docker run -d -v jenkins_home:/var/jenkins_home -p 8080:8080 -p 50000:50000 --restart=on-failure jenkins/jenkins:lts-jdk11
 ```
 
-this will run Jenkins in detached mode with port forwarding and volume added. You can access logs with command 'docker logs CONTAINER_ID' in order to check first login token. ID of container will be returned from output of command above.
+This will run Jenkins in detached mode with port forwarding and volume added. You can access logs with command 'docker logs CONTAINER_ID' in order to check first login token. ID of container will be returned from output of command above.
 
 ## Backing up data
 
 If you bind mount in a volume - you can simply back up that directory
 (which is jenkins_home) at any time.
 
-This is highly recommended. Treat the jenkins_home directory as you would a database - in Docker you would generally put a database on a volume.
+Using a bind mount is not recommended since it can lead to permission issues. Treat the jenkins_home directory as you would a database - in Docker you would generally put a database on a volume.
 
 If your volume is inside a container - you can use `docker cp $ID:/var/jenkins_home` command to extract the data, or other options to find where the volume data is.
-Note that some symlinks on some OSes may be converted to copies (this can confuse jenkins with lastStableBuild links etc)
+Note that some symlinks on some OSes may be converted to copies (this can confuse jenkins with lastStableBuild links, etc)
 
 For more info check Docker docs section on [Use volumes](https://docs.docker.com/storage/volumes/)
 
@@ -57,6 +57,7 @@ You can define the number of executors on the Jenkins built-in node using a groo
 By default it is set to 2 executors, but you can extend the image and change it to your desired number of executors (recommended 0 executors on the built-in node) :
 
 `executors.groovy`
+
 ```
 import jenkins.model.*
 Jenkins.instance.setNumExecutors(0) // Recommended to not run builds on the built-in node
@@ -86,7 +87,7 @@ You might need to customize the JVM running Jenkins, typically to adjust [system
 Use the `JAVA_OPTS` or `JENKINS_JAVA_OPTS` environment variables for this purpose :
 
 ```
-docker run --name myjenkins -p 8080:8080 -p 50000:50000 --restart always --env JAVA_OPTS=-Dhudson.footerURL=http://mycompany.com jenkins/jenkins:lts-jdk11
+docker run --name myjenkins -p 8080:8080 -p 50000:50000 --restart=on-failure --env JAVA_OPTS=-Dhudson.footerURL=http://mycompany.com jenkins/jenkins:lts-jdk11
 ```
 
 JVM options specifically for the Jenkins controller should be set through `JENKINS_JAVA_OPTS`, as other tools might also respond to the `JAVA_OPTS` environment variable.
@@ -103,32 +104,36 @@ handlers=java.util.logging.ConsoleHandler
 jenkins.level=FINEST
 java.util.logging.ConsoleHandler.level=FINEST
 EOF
-docker run --name myjenkins -p 8080:8080 -p 50000:50000 --restart always --env JAVA_OPTS="-Djava.util.logging.config.file=/var/jenkins_home/log.properties" -v `pwd`/data:/var/jenkins_home jenkins/jenkins:lts-jdk11
+docker run --name myjenkins -p 8080:8080 -p 50000:50000 --restart=on-failure --env JAVA_OPTS="-Djava.util.logging.config.file=/var/jenkins_home/log.properties" -v `pwd`/data:/var/jenkins_home jenkins/jenkins:lts-jdk11
 ```
 
 # Configuring reverse proxy
-If you want to install Jenkins behind a reverse proxy with prefix, example: mysite.com/jenkins, you need to add environment variable `JENKINS_OPTS="--prefix=/jenkins"` and then follow the below procedures to configure your reverse proxy, which will depend if you have Apache or Nginx:
+
+If you want to install Jenkins behind a reverse proxy with a prefix, example: mysite.com/jenkins, you need to add environment variable `JENKINS_OPTS="--prefix=/jenkins"` and then follow the below procedures to configure your reverse proxy, which will depend if you have Apache or Nginx:
+
 - [Apache](https://www.jenkins.io/doc/book/system-administration/reverse-proxy-configuration-apache/)
 - [Nginx](https://www.jenkins.io/doc/book/system-administration/reverse-proxy-configuration-nginx/)
 
 # Passing Jenkins launcher parameters
 
 Arguments you pass to docker running the Jenkins image are passed to jenkins launcher, so for example you can run:
+
 ```
 docker run jenkins/jenkins:lts-jdk11 --version
 ```
+
 This will show the Jenkins version, the same as when you run Jenkins from an executable war.
 
 You can also define Jenkins arguments via `JENKINS_OPTS`. This is useful for customizing arguments to the jenkins
- launcher in a derived Jenkins image. The following sample Dockerfile uses this option
+launcher in a derived Jenkins image. The following sample Dockerfile uses this option
 to force use of HTTPS with a certificate included in the image.
 
 ```
 FROM jenkins/jenkins:lts-jdk11
 
-COPY --chown=jenkins:jenkins https.pem /var/lib/jenkins/cert
+COPY --chown=jenkins:jenkins certificate.pfx /var/lib/jenkins/certificate.pfx
 COPY --chown=jenkins:jenkins https.key /var/lib/jenkins/pk
-ENV JENKINS_OPTS --httpPort=-1 --httpsPort=8083 --httpsCertificate=/var/lib/jenkins/cert --httpsPrivateKey=/var/lib/jenkins/pk
+ENV JENKINS_OPTS --httpPort=-1 --httpsPort=8083 --httpsKeyStore=/var/lib/jenkins/certificate.pfx --httpsKeyStorePassword=Password12
 EXPOSE 8083
 ```
 
@@ -138,16 +143,18 @@ You can also change the default agent port for Jenkins by defining `JENKINS_SLAV
 FROM jenkins/jenkins:lts-jdk11
 ENV JENKINS_SLAVE_AGENT_PORT 50001
 ```
+
 or as a parameter to docker,
+
 ```
-docker run --name myjenkins -p 8080:8080 -p 50001:50001 --restart always --env JENKINS_SLAVE_AGENT_PORT=50001 jenkins/jenkins:lts-jdk11
+docker run --name myjenkins -p 8080:8080 -p 50001:50001 --restart=on-failure --env JENKINS_SLAVE_AGENT_PORT=50001 jenkins/jenkins:lts-jdk11
 ```
 
 **Note**: This environment variable will be used to set the
 [system property](https://www.jenkins.io/doc/book/managing/system-properties/) `jenkins.model.Jenkins.slaveAgentPort`.
 
 > If this property is already set in **JAVA_OPTS** or **JENKINS_JAVA_OPTS**, then the value of
-`JENKINS_SLAVE_AGENT_PORT` will be ignored.
+> `JENKINS_SLAVE_AGENT_PORT` will be ignored.
 
 # Installing more tools
 
@@ -181,17 +188,17 @@ You can rely on the plugin manager CLI to pass a set of plugins to download with
 
 During the download, the script will use update centers defined by the following environment variables:
 
-* `JENKINS_UC` - Main update center.
+- `JENKINS_UC` - Main update center.
   This update center may offer plugin versions depending on the Jenkins LTS Core versions.
   Default value: https://updates.jenkins.io
-* `JENKINS_UC_EXPERIMENTAL` - [Experimental Update Center](https://jenkins.io/blog/2013/09/23/experimental-plugins-update-center/).
+- `JENKINS_UC_EXPERIMENTAL` - [Experimental Update Center](https://jenkins.io/blog/2013/09/23/experimental-plugins-update-center/).
   This center offers Alpha and Beta versions of plugins.
   Default value: https://updates.jenkins.io/experimental
-* `JENKINS_INCREMENTALS_REPO_MIRROR` -
+- `JENKINS_INCREMENTALS_REPO_MIRROR` -
   Defines Maven mirror to be used to download plugins from the
   [Incrementals repo](https://jenkins.io/blog/2018/05/15/incremental-deployment/).
   Default value: https://repo.jenkins-ci.org/incrementals
-* `JENKINS_UC_DOWNLOAD` - Download url of the Update Center.
+- `JENKINS_UC_DOWNLOAD` - Download url of the Update Center.
   Default value: `$JENKINS_UC/download`
 
 It is possible to override the environment variables in images.
@@ -227,7 +234,7 @@ When jenkins container starts, it will check `JENKINS_HOME` has this reference c
 there if required. It will not override such files, so if you upgraded some plugins from UI they won't
 be reverted on next start.
 
-In case you *do* want to override, append '.override' to the name of the reference file. E.g. a file named
+In case you _do_ want to override, append '.override' to the name of the reference file. E.g. a file named
 `/usr/share/jenkins/ref/config.xml.override` will overwrite an existing `config.xml` file in JENKINS_HOME.
 
 Also see [JENKINS-24986](https://issues.jenkins.io/browse/JENKINS-24986)
@@ -257,6 +264,52 @@ to indicate that this Jenkins installation is fully configured.
 Otherwise a banner will appear prompting the user to install additional plugins,
 which may be inappropriate.
 
+### Access logs
+
+To enable Jenkins user access logs from Jenkins home directory inside a docker container, set the `JENKINS_OPTS` environment variable value to `--accessLoggerClassName=winstone.accesslog.SimpleAccessLogger --simpleAccessLogger.format=combined --simpleAccessLogger.file=/var/jenkins_home/logs/access_log`
+
+### Naming convention in tags
+
+The naming convention for the tags on Docker Hub follows the format `<repository_name>:<tag>`, where the repository name is jenkins/jenkins and where the tag specifies the image version.
+In the case of the LTS and latest versions, the tags are `lts` and `latest`, respectively.
+
+You can use these tags to pull the corresponding Jenkins images from Docker Hub and run them on your system.
+For example, to pull the LTS version of the Jenkins image use this command: `docker pull jenkins/jenkins:lts`
+
+### Docker Compose with Jenkins
+
+To use Docker Compose with Jenkins, you can define a docker-compose.yml file including a Jenkins instance and any other services it depends on.
+For example, the following docker-compose.yml file defines a Jenkins controller and a Jenkins SSH agent:
+
+```yaml
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    ports:
+      - "8080:8080"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+  ssh-agent:
+    image: jenkins/ssh-agent
+volumes:
+  jenkins_home:
+```
+
+This `docker-compose.yml` file creates two containers: one for Jenkins and one for the Jenkins SSH agent.
+
+The Jenkins container is based on the `jenkins/jenkins:lts` image and exposes the Jenkins web interface on port 8080.
+The `jenkins_home` volume is a [named volume](https://docs.docker.com/storage/volumes/) that is created and managed by Docker.
+
+It is mounted at `/var/jenkins_home` in the Jenkins container, and it will persist the Jenkins configuration and data.
+
+The ssh-agent container is based on the `jenkins/ssh-agent` image and runs an SSH server to execute [Jenkins SSH Build Agent](https://plugins.jenkins.io/ssh-slaves/).
+
+To start the Jenkins instance and the other services defined in the `docker-compose.yml` file, run the `docker compose up -d`.
+
+This will pull the necessary images from Docker Hub if they are not already present on your system, and start the services in the background.
+
+You can then access the Jenkins web interface on `http://localhost:8080` on your host system to configure and manage your Jenkins instance (where `localhost` points to the published port by your Docker Engine).
+
 ### Updating plugins file
 
 The [plugin-installation-manager-tool](https://github.com/jenkinsci/plugin-installation-manager-tool) supports updating the plugin file for you.
@@ -275,6 +328,10 @@ All the data needed is in the /var/jenkins_home directory - so depending on how 
 Generally - you can copy it out - and then "docker pull" the image again - and you will have the latest LTS - you can then start up with -v pointing to that data (/var/jenkins_home) and everything will be as you left it.
 
 As always - please ensure that you know how to drive docker - especially volume handling!
+
+If you mount the Jenkins home directory to a [Docker named volume](https://docs.docker.com/storage/volumes/), then the upgrade consists of `docker pull` and nothing more.
+
+We recommend using `docker compose`, especially in cases where the user is also running a parallel nginx/apache container as a reverse proxy for the Jenkins container.
 
 ### Upgrading plugins
 
